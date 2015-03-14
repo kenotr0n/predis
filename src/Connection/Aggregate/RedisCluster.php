@@ -18,6 +18,7 @@ use OutOfBoundsException;
 use Predis\NotSupportedException;
 use Predis\Cluster\StrategyInterface;
 use Predis\Cluster\RedisStrategy as RedisClusterStrategy;
+use Predis\Replication\ReplicationStrategy as ReadOnlyStrategy;
 use Predis\Command\CommandInterface;
 use Predis\Command\RawCommand;
 use Predis\Connection\NodeConnectionInterface;
@@ -52,6 +53,8 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
     private $defaultParameters = array();
     private $pool = array();
     private $slots = array();
+    private $connSlaves = array();
+    private $readOnlyStrategy;
     private $slotsMap;
     private $strategy;
     private $connections;
@@ -66,6 +69,8 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
     ) {
         $this->connections = $connections;
         $this->strategy = $strategy ?: new RedisClusterStrategy();
+        $this->readOnlyStrategy = new ReadOnlyStrategy();
+        $this->buildSlavesMap();
     }
 
     /**
@@ -169,8 +174,36 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
                 continue;
             }
 
-            $slots = explode('-', $parameters->slots, 2);
-            $this->setSlots($slots[0], $slots[1], $connectionID);
+            foreach (explode(',', $parameters->slots) as $slotRange) {
+                list($first,$last) = explode('-', $slotRange, 2);
+
+                $this->setSlots($first, $last, $connectionID);
+            }
+        }
+    }
+
+    /**
+     * Sets pre-configured slave mappings for each connection in the pool
+     * from the "slaves" connection parameter.
+     *
+     */
+    public function buildSlavesMap()
+    {
+        $this->connSlaves = array();
+
+        foreach ($this->pool as $connectionID => $connection) {
+            $parameters = $connection->getParameters();
+
+            if (!isset($parameters->slaves)) {
+                continue;
+            }
+
+            $connStr = (string)$connection;
+
+            // 'slaves' parameter is a comma-separated list of host:port slave ids:
+            foreach (explode(',', $parameters->slaves) as $slaveID) {
+                $this->connSlaves[$connStr][] = $slaveID;
+            }
         }
     }
 
@@ -192,15 +225,20 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
         $command = RawCommand::create('CLUSTER', 'SLOTS');
         $response = $connection->executeCommand($command);
 
-        foreach ($response as $slots) {
-            // We only support master servers for now, so we ignore subsequent
-            // elements in the $slots array identifying slaves.
-            list($start, $end, $master) = $slots;
+        foreach ($response as $clusterSlotsOutput) {
+            // first two elements are slot range beginning and ending, next is master host+port:
+            $start = array_shift($clusterSlotsOutput);
+            $end = array_shift($clusterSlotsOutput);
+            list($masterHost, $masterPort) = array_shift($clusterSlotsOutput);
 
-            if ($master[0] === '') {
-                $this->setSlots($start, $end, (string) $connection);
-            } else {
-                $this->setSlots($start, $end, "{$master[0]}:{$master[1]}");
+            // remainder of output are slaves, so store them for read-only commands:
+            $masterStr = ($masterHost === '') ? (string) $connection : "$masterHost:$masterPort";
+            $this->setSlots($start, $end, $masterStr);
+
+            // add any configured slaves for this master:
+            foreach ($slots as $slaveID {
+                list($host,$port) = $slaveID;
+                $this->connSlaves[$masterStr][] = "$host:$port";
             }
         }
 
@@ -298,11 +336,14 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
     public function getConnection(CommandInterface $command)
     {
         $slot = $this->strategy->getSlot($command);
-
         if (!isset($slot)) {
             throw new NotSupportedException(
                 "Cannot use '{$command->getId()}' with redis-cluster."
             );
+        }
+
+        if (isset($this->readOnlyStrategy) && $this->readOnlyStrategy->isReadOperation($command)) {
+            return $this->randomSlaveForSlot($slot);
         }
 
         if (isset($this->slots[$slot])) {
@@ -310,6 +351,37 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
         } else {
             return $this->getConnectionBySlot($slot);
         }
+    }
+
+    /** Returns a connection to a slave for the given slot.
+     *
+     * If no slave is known for that slot, returns the master connection instead.
+     *
+     * @param int $slot Slot index.
+     *
+     * @return NodeConnectionInterface
+     *
+     * @throws \OutOfBoundsException
+     */
+    public function randomSlaveForSlot($slot)
+    {
+        $connection = isset($this->slots[$slot]) ? $this->slots[$slot] : $this->getConnectionBySlot($slot);
+
+        $masterStr = (string)$connection;
+        if (!isset($this->connSlaves[$masterStr])) {
+            return  $connection;
+        }
+
+        $slaves = $this->connSlaves[$masterStr];
+        $slaveID= $slaves[array_rand($slaves)];
+
+        if (!$connection = $this->getConnectionById($slaveID)) {
+            $connection = $this->createConnection($slaveID);
+        }
+
+        // must prepare the connection for read-only operations to slaves:
+        $connection->executeCommand(RawCommand::create('READONLY'));
+        return $connection;
     }
 
     /**
