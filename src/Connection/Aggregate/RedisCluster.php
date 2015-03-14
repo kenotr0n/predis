@@ -53,7 +53,7 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
     private $defaultParameters = array();
     private $pool = array();
     private $slots = array();
-    private $connSlaves = array();
+    private $connSlaves;
     private $readOnlyStrategy;
     private $slotsMap;
     private $strategy;
@@ -70,7 +70,6 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
         $this->connections = $connections;
         $this->strategy = $strategy ?: new RedisClusterStrategy();
         $this->readOnlyStrategy = new ReadOnlyStrategy();
-        $this->buildSlavesMap();
     }
 
     /**
@@ -296,6 +295,10 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
     {
         if (!isset($this->slotsMap)) {
             $this->buildSlotsMap();
+        }
+
+        if (!isset($this->connSlaves)) {
+            $this->buildSlavesMap();
         }
 
         if (isset($this->slotsMap[$slot])) {
