@@ -343,7 +343,7 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
         }
 
         if (isset($this->readOnlyStrategy) && $this->readOnlyStrategy->isReadOperation($command)) {
-            return $this->randomSlaveForSlot($slot);
+            return $this->randomSlaveForSlot($slot, true);
         }
 
         if (isset($this->slots[$slot])) {
@@ -367,7 +367,7 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
     public function randomSlaveForSlot($slot, $includeMaster=false)
     {
         $connection = false;
-        if (!isset($this->slots[$slot])) {
+        if (isset($this->slots[$slot])) {
             $connection = $this->slots[$slot];
         } else {
             $connection = $this->getConnectionBySlot($slot);
