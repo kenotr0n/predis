@@ -358,29 +358,45 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
      * If no slave is known for that slot, returns the master connection instead.
      *
      * @param int $slot Slot index.
+     * @param includeMaster (optional) if true, will let master be included in random selection.
      *
      * @return NodeConnectionInterface
      *
      * @throws \OutOfBoundsException
      */
-    public function randomSlaveForSlot($slot)
+    public function randomSlaveForSlot($slot, $includeMaster=false)
     {
-        $connection = isset($this->slots[$slot]) ? $this->slots[$slot] : $this->getConnectionBySlot($slot);
+        $connection = false;
+        if (!isset($this->slots[$slot])) {
+            $connection = $this->slots[$slot];
+        } else {
+            $connection = $this->getConnectionBySlot($slot);
+        }
 
         $masterStr = (string)$connection;
         if (!isset($this->connSlaves[$masterStr])) {
-            return  $connection;
+            return $connection;
         }
 
-        $slaves = $this->connSlaves[$masterStr];
-        $slaveID= $slaves[array_rand($slaves)];
-
-        if (!$connection = $this->getConnectionById($slaveID)) {
-            $connection = $this->createConnection($slaveID);
+        // collect array of read-capable nodes:
+        $readNodes = $this->connSlaves[$masterStr];
+        if($includeMaster) {
+            $readNodes[] = $masterStr;
         }
 
-        // must prepare the connection for read-only operations to slaves:
-        $connection->executeCommand(RawCommand::create('READONLY'));
+        // select a random read-capable node:
+        $randomIx = array_rand($readNodes);
+        $connID= $readNodes[$randomIx];
+        $isMaster = ($includeMaster && $randomIx == count($readNodes) - 1);
+
+        if (!$connection = $this->getConnectionById($connID)) {
+            $connection = $this->createConnection($connID);
+        }
+
+        // if sending command to slave, first send READONLY command:
+        if (!$isMaster) {
+            $connection->executeCommand(RawCommand::create('READONLY'));
+        }
         return $connection;
     }
 
