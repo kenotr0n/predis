@@ -236,7 +236,7 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
             $this->setSlots($start, $end, $masterStr);
 
             // add any configured slaves for this master:
-            foreach ($slots as $slaveID {
+            foreach ($slots as $slaveID) {
                 list($host,$port) = $slaveID;
                 $this->connSlaves[$masterStr][] = "$host:$port";
             }
