@@ -11,17 +11,13 @@
 
 namespace Predis\Connection\Aggregate;
 
-use ArrayIterator;
-use Countable;
-use IteratorAggregate;
-use OutOfBoundsException;
-use Predis\NotSupportedException;
-use Predis\Cluster\StrategyInterface;
 use Predis\Cluster\RedisStrategy as RedisClusterStrategy;
+use Predis\Cluster\StrategyInterface;
 use Predis\Command\CommandInterface;
 use Predis\Command\RawCommand;
-use Predis\Connection\NodeConnectionInterface;
 use Predis\Connection\FactoryInterface;
+use Predis\Connection\NodeConnectionInterface;
+use Predis\NotSupportedException;
 use Predis\Response\ErrorInterface as ErrorResponseInterface;
 
 /**
@@ -46,7 +42,7 @@ use Predis\Response\ErrorInterface as ErrorResponseInterface;
  *
  * @author Daniele Alessandri <suppakilla@gmail.com>
  */
-class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
+class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
 {
     private $useClusterSlots = true;
     private $defaultParameters = array();
@@ -169,8 +165,11 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
                 continue;
             }
 
-            $slots = explode('-', $parameters->slots, 2);
-            $this->setSlots($slots[0], $slots[1], $connectionID);
+            foreach (explode(',', $parameters->slots) as $slotRange) {
+                list($first,$last) = explode('-', $slotRange, 2);
+
+                $this->setSlots($first, $last, $connectionID);
+            }
         }
     }
 
@@ -196,11 +195,12 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
             // We only support master servers for now, so we ignore subsequent
             // elements in the $slots array identifying slaves.
             list($start, $end, $master) = $slots;
+            list($masterHost, $masterPort) = $master;
 
-            if ($master[0] === '') {
+            if ($masterHost === '') {
                 $this->setSlots($start, $end, (string) $connection);
             } else {
-                $this->setSlots($start, $end, "{$master[0]}:{$master[1]}");
+                $this->setSlots($start, $end, "{$masterHost}:{$masterPort}");
             }
         }
 
@@ -236,7 +236,7 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
             $last < 0x0000 || $last > 0x3FFF ||
             $last < $first
         ) {
-            throw new OutOfBoundsException(
+            throw new \OutOfBoundsException(
                 "Invalid slot range for $connection: [$first-$last]."
             );
         }
@@ -280,11 +280,11 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
      */
     protected function createConnection($connectionID)
     {
-        $host = explode(':', $connectionID, 2);
+        list($host,$port) = explode(':', $connectionID, 2);
 
         $parameters = array_merge($this->defaultParameters, array(
-            'host' => $host[0],
-            'port' => $host[1],
+            'host' => $host,
+            'port' => $port,
         ));
 
         $connection = $this->connections->create($parameters);
@@ -317,14 +317,14 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
      *
      * @param int $slot Slot index.
      *
-     * @return NodeConnectionInterface
-     *
      * @throws \OutOfBoundsException
+     *
+     * @return NodeConnectionInterface
      */
     public function getConnectionBySlot($slot)
     {
         if ($slot < 0x0000 || $slot > 0x3FFF) {
-            throw new OutOfBoundsException("Invalid slot [$slot].");
+            throw new \OutOfBoundsException("Invalid slot [$slot].");
         }
 
         if (isset($this->slots[$slot])) {
@@ -431,8 +431,9 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
      * Handles -ASK responses by executing again the command against the node
      * indicated by the Redis response.
      *
-     * @param  CommandInterface $command Command that generated the -ASK response.
-     * @param  string           $details Parameters of the -ASK response.
+     * @param CommandInterface $command Command that generated the -ASK response.
+     * @param string           $details Parameters of the -ASK response.
+     *
      * @return mixed
      */
     protected function onAskResponse(CommandInterface $command, $details)
@@ -493,7 +494,7 @@ class RedisCluster implements ClusterInterface, IteratorAggregate, Countable
      */
     public function getIterator()
     {
-        return new ArrayIterator(array_values($this->pool));
+        return new \ArrayIterator(array_values($this->pool));
     }
 
     /**
